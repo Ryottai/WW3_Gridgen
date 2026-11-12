@@ -51,37 +51,23 @@ def inspect_add():
         print("\nAvailable layers:")
         print(layers.to_string(index=False))
 
-        for layer_name in layers["name"]:
+        for _, layer_info in layers.iterrows():
+            layer_name = layer_info["name"]
+            geometry_type = layer_info["geometry_type"]
 
-            print("\n" + "-" * 50)
+            # Skip non-spatial tables such as layer_styles
+            if not isinstance(geometry_type, str):
+                print(f"\nSkipping non-spatial table: {layer_name}")
+                continue
+
+            print(f"\n{'-' * 50}")
             print(f"Layer: {layer_name}")
 
-            # Read only one feature for schema inspection
-            gdf = gpd.read_file(
-                gpkg,
-                layer=layer_name,
-                rows=1
-            )
+            gdf = gpd.read_file(gpkg, layer=layer_name, rows=1)
 
             print("CRS:", gdf.crs)
-            print("Geometry type:", gdf.geometry.geom_type.unique())
+            print("Geometry type:", gdf.geom_type.unique())
             print("Columns:", list(gdf.columns))
-
-            # Read metadata and spatial extent
-            try:
-                import fiona
-
-                with fiona.open(
-                    gpkg,
-                    layer=layer_name
-                ) as src:
-
-                    print("Feature count:", len(src))
-                    print("Bounds:", src.bounds)
-                    print("Schema:", src.schema)
-
-            except Exception as e:
-                print("Metadata inspection warning:", e)
 
 
 # ============================================================
