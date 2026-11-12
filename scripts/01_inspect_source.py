@@ -69,6 +69,20 @@ def inspect_add():
             print("Geometry type:", gdf.geom_type.unique())
             print("Columns:", list(gdf.columns))
 
+            # --------------------------------------------------
+            # Detailed inspection for polygon layer
+            # --------------------------------------------------
+            if "polygon" in layer_name.lower():
+
+                print("\nLoading full polygon layer...")
+                full_gdf = gpd.read_file(gpkg, layer=layer_name)
+
+                print("Feature count:", len(full_gdf))
+                print("Bounds:", full_gdf.total_bounds)
+
+                print("\nSurface categories:")
+                print(full_gdf["surface"].value_counts(dropna=False))
+
 
 # ============================================================
 # IBCSO INSPECTION
