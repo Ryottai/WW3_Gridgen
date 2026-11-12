@@ -22,8 +22,8 @@ import rasterio
 
 ROOT = Path(__file__).resolve().parents[1]
 
-ADD_DIR = ROOT / "data" / "raw" / "ADD"
-IBCSO_DIR = ROOT / "data" / "raw" / "IBCSO"
+ADD_DIR = ROOT / "input" / "raw" / "ADD"
+IBCSO_DIR = ROOT / "input" / "raw" / "IBCSO"
 
 
 # ============================================================
