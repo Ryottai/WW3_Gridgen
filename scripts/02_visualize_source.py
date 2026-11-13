@@ -5,13 +5,22 @@
 Generate three separate figures for ADD and IBCSO source data.
 
 1. Antarctica-wide ADD + IBCSO
-2. Lutzow-Holm Bay IBCSO bathymetry
-3. Lutzow-Holm Bay ADD + IBCSO
+   - South Polar Stereographic projection
+   - Latitude / longitude graticules
+
+2. Lützow-Holm Bay IBCSO
+   - Geographic coordinates (longitude / latitude)
+
+3. Lützow-Holm Bay ADD + IBCSO
+   - Geographic coordinates (longitude / latitude)
 
 All source data are read-only.
+Reprojection is performed only for visualization.
 """
 
 from pathlib import Path
+import sys
+import math
 
 import geopandas as gpd
 import matplotlib.pyplot as plt
@@ -22,105 +31,54 @@ from rasterio.enums import Resampling
 from rasterio.transform import from_origin
 from rasterio.vrt import WarpedVRT
 from rasterio.warp import transform_bounds
-from matplotlib.ticker import FuncFormatter
 
+import cartopy.crs as ccrs
+import cartopy.mpl.ticker as cticker
 
-# ============================================================
-# PATHS
-# ============================================================
+# ------------------------------------------------------------
+# Import shared configuration
+# ------------------------------------------------------------
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
-ADD_DIR = ROOT / "input" / "raw" / "ADD"
-IBCSO_DIR = ROOT / "input" / "raw" / "IBCSO"
-
-OUTPUT_DIR = ROOT / "output" / "figures"
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-LINE_FILE = ADD_DIR / "add_coastline_high_res_line_v7_12.gpkg"
-POLYGON_FILE = ADD_DIR / "add_coastline_high_res_polygon_v7_12.gpkg"
-IBCSO_FILE = IBCSO_DIR / "IBCSO_bed.tif"
-
-
-# ============================================================
-# DISPLAY SETTINGS
-# ============================================================
-
-ADD_CRS = "EPSG:3031"
-
-# Lützow-Holm Bay display extent (longitude, latitude).
-LONLAT_BOUNDS = (30.0, -70.0, 42.0, -66.0)
-
-# Antarctica-wide display extent in EPSG:3031 (meters).
-ANTARCTICA_BOUNDS = (
-    -3_300_000,
-    -3_300_000,
-    3_300_000,
-    3_300_000,
+from config import (
+    ADD_LINE_FILE,
+    ADD_POLYGON_FILE,
+    IBCSO_FILE,
+    FIGURE_DIR,
+    ADD_CRS,
+    GEOGRAPHIC_CRS,
+    LHB_BOUNDS,
+    LHB_DISPLAY_MARGIN_DEG,
+    ANTARCTICA_BOUNDS,
+    ANTARCTICA_DISPLAY_RESOLUTION,
+    LHB_DISPLAY_RESOLUTION_DEG,
+    BATHY_VMIN,
+    BATHY_VMAX,
+    BATHY_CMAP,
+    SURFACE_COLORS,
+    FIGURE_DPI,
 )
-
-# Display raster resolutions.
-ANTARCTICA_RESOLUTION = 10_000.0  # 10 km
-LHB_RESOLUTION = 1_000.0          # 1 km
-
-# ADD polygon colors.
-SURFACE_COLORS = {
-    "land": "#777777",
-    "ice shelf": "#80c9e8",
-    "ice tongue": "#2878b5",
-    "rumple": "#e6a23c",
-}
-
-# IBCSO display range.
-BATHY_VMIN = -5000
-BATHY_VMAX = 1500
-
-# Figure settings.
-DPI = 200
 
 
 # ============================================================
 # COMMON FUNCTIONS
 # ============================================================
 
-def format_km(value, position):
-    return f"{value / 1000:.0f}"
-
-
-def format_axis(ax):
-
-    ax.xaxis.set_major_formatter(
-        FuncFormatter(format_km)
-    )
-    ax.yaxis.set_major_formatter(
-        FuncFormatter(format_km)
-    )
-
-    ax.set_xlabel("Easting (km)")
-    ax.set_ylabel("Northing (km)")
-
-    ax.set_aspect("equal")
-    ax.grid(
-        True,
-        linestyle=":",
-        linewidth=0.5,
-        alpha=0.5,
-    )
-
-
 def save_figure(fig, filename):
 
-    output_file = OUTPUT_DIR / filename
+    output_file = FIGURE_DIR / filename
 
     fig.savefig(
         output_file,
-        dpi=DPI,
+        dpi=FIGURE_DPI,
         bbox_inches="tight",
     )
 
     print(f"\nFigure saved: {output_file}")
 
-    return output_file
+    plt.close(fig)
 
 
 def add_surface_legend(ax):
@@ -145,7 +103,7 @@ def add_surface_legend(ax):
 # LOAD ADD DATA
 # ============================================================
 
-def load_add_data(plot_bounds=None):
+def load_add_data(plot_bounds=None, target_crs=ADD_CRS):
 
     """
     Load ADD polygon and line data.
@@ -153,24 +111,27 @@ def load_add_data(plot_bounds=None):
     Parameters
     ----------
     plot_bounds : tuple or None
-        Bounds in EPSG:3031 (xmin, ymin, xmax, ymax).
+        Bounds in ADD_CRS (xmin, ymin, xmax, ymax).
         If None, load the entire dataset.
+
+    target_crs : str
+        CRS used for plotting.
     """
 
     print("\nLoading ADD polygon data...")
 
     if plot_bounds is None:
-        polygons = gpd.read_file(POLYGON_FILE)
+        polygons = gpd.read_file(ADD_POLYGON_FILE)
     else:
         polygons = gpd.read_file(
-            POLYGON_FILE,
+            ADD_POLYGON_FILE,
             bbox=plot_bounds,
         )
 
     if polygons.crs is None:
         raise ValueError("ADD polygon CRS is undefined.")
 
-    polygons = polygons.to_crs(ADD_CRS)
+    polygons = polygons.to_crs(target_crs)
 
     print("Polygon features:", len(polygons))
     print("Surface categories:")
@@ -179,17 +140,21 @@ def load_add_data(plot_bounds=None):
     print("\nLoading ADD line data...")
 
     if plot_bounds is None:
-        lines = gpd.read_file(LINE_FILE)
+        lines = gpd.read_file(
+            ADD_LINE_FILE,
+            layer="add_coastline_high_res_line_v7_12",
+        )
     else:
         lines = gpd.read_file(
-            LINE_FILE,
+            ADD_LINE_FILE,
             bbox=plot_bounds,
+            layer="add_coastline_high_res_line_v7_12",
         )
 
     if lines.crs is None:
         raise ValueError("ADD line CRS is undefined.")
 
-    lines = lines.to_crs(ADD_CRS)
+    lines = lines.to_crs(target_crs)
 
     print("Line features:", len(lines))
 
@@ -197,30 +162,37 @@ def load_add_data(plot_bounds=None):
 
 
 # ============================================================
-# LOAD IBCSO DATA
+# LOAD AND REPROJECT IBCSO
 # ============================================================
 
-def load_ibcso(plot_bounds, display_resolution):
-
+def load_ibcso(
+    plot_bounds,
+    target_crs,
+    display_resolution,
+):
     """
     Reproject only the requested display area.
-
-    Original IBCSO GeoTIFF is not modified.
 
     Parameters
     ----------
     plot_bounds : tuple
-        EPSG:3031 bounds (xmin, ymin, xmax, ymax).
+        Bounds in target_crs:
+        (xmin, ymin, xmax, ymax).
+
+    target_crs : str
+        Destination CRS.
+
     display_resolution : float
-        Output display pixel size in meters.
+        Pixel size in target CRS units.
+        Meters for EPSG:3031, degrees for EPSG:4326.
     """
 
     xmin, ymin, xmax, ymax = plot_bounds
 
-    width = round(
+    width = math.ceil(
         (xmax - xmin) / display_resolution
     )
-    height = round(
+    height = math.ceil(
         (ymax - ymin) / display_resolution
     )
 
@@ -232,9 +204,10 @@ def load_ibcso(plot_bounds, display_resolution):
     )
 
     print("\nLoading IBCSO bathymetry...")
-    print("Display CRS:", ADD_CRS)
-    print("Display resolution:", display_resolution, "m")
-    print("Display raster size:", width, "x", height)
+    print("Source file:", IBCSO_FILE)
+    print("Target CRS:", target_crs)
+    print("Display resolution:", display_resolution)
+    print("Output raster size:", width, "x", height)
 
     with rasterio.open(IBCSO_FILE) as src:
 
@@ -245,7 +218,7 @@ def load_ibcso(plot_bounds, display_resolution):
 
         with WarpedVRT(
             src,
-            crs=ADD_CRS,
+            crs=target_crs,
             transform=dst_transform,
             width=width,
             height=height,
@@ -259,8 +232,8 @@ def load_ibcso(plot_bounds, display_resolution):
 
     raster_extent = (
         xmin,
-        xmax,
-        ymin,
+        xmin + width * display_resolution,
+        ymax - height * display_resolution,
         ymax,
     )
 
@@ -268,16 +241,25 @@ def load_ibcso(plot_bounds, display_resolution):
 
 
 # ============================================================
-# PLOT IBCSO BACKGROUND
+# DRAW IBCSO
 # ============================================================
 
-def draw_ibcso(ax, bathy, raster_extent):
-
-    image = ax.imshow(
+def draw_ibcso(
+    ax,
+    bathy,
+    raster_extent,
+):
+    image = plt.Axes.imshow(
+        ax,
         bathy,
-        extent=raster_extent,
+        extent=(
+            raster_extent[0],
+            raster_extent[1],
+            raster_extent[2],
+            raster_extent[3],
+        ),
         origin="upper",
-        cmap="terrain",
+        cmap=BATHY_CMAP,
         vmin=BATHY_VMIN,
         vmax=BATHY_VMAX,
         interpolation="nearest",
@@ -287,12 +269,12 @@ def draw_ibcso(ax, bathy, raster_extent):
 
 
 # ============================================================
-# PLOT ADD OVERLAY
+# DRAW ADD
 # ============================================================
 
 def draw_add(ax, polygons, lines, overview=False):
 
-    # Draw polygons by surface category.
+    # Draw polygon categories.
     for surface, color in SURFACE_COLORS.items():
 
         subset = polygons[
@@ -331,12 +313,19 @@ def plot_antarctica(polygons, lines):
 
     bathy, raster_extent = load_ibcso(
         ANTARCTICA_BOUNDS,
-        ANTARCTICA_RESOLUTION,
+        ADD_CRS,
+        ANTARCTICA_DISPLAY_RESOLUTION,
     )
 
-    fig, ax = plt.subplots(
-        figsize=(10, 10),
-        constrained_layout=True,
+    map_crs = ccrs.epsg(3031)
+
+    fig = plt.figure(figsize=(10, 10))
+
+    ax = fig.add_subplot(
+        1,
+        1,
+        1,
+        projection=map_crs,
     )
 
     image = draw_ibcso(
@@ -345,6 +334,7 @@ def plot_antarctica(polygons, lines):
         raster_extent,
     )
 
+    # ADD geometries are already in EPSG:3031.
     draw_add(
         ax,
         polygons,
@@ -352,24 +342,39 @@ def plot_antarctica(polygons, lines):
         overview=True,
     )
 
-    ax.set_xlim(
-        ANTARCTICA_BOUNDS[0],
-        ANTARCTICA_BOUNDS[2],
-    )
-    ax.set_ylim(
-        ANTARCTICA_BOUNDS[1],
-        ANTARCTICA_BOUNDS[3],
+    xmin, ymin, xmax, ymax = ANTARCTICA_BOUNDS
+
+    ax.set_xlim(xmin, xmax)
+    ax.set_ylim(ymin, ymax)
+
+    ax.set_title(
+        "Antarctica: IBCSO + ADD",
+        fontsize=14,
     )
 
-    ax.set_title("Antarctica: IBCSO + ADD")
+    # Latitude / longitude gridlines.
+    gl = ax.gridlines(
+        crs=ccrs.PlateCarree(),
+        draw_labels=True,
+        linewidth=0.5,
+        color="gray",
+        alpha=0.6,
+        linestyle=":",
+        x_inline=False,
+        y_inline=False,
+    )
 
-    format_axis(ax)
+    gl.xlocator = cticker.LongitudeLocator(30)
+    gl.ylocator = cticker.LatitudeLocator(10)
+    gl.xlabel_style = {"size": 8}
+    gl.ylabel_style = {"size": 8}
 
     fig.colorbar(
         image,
         ax=ax,
         label="Elevation / bathymetry (m)",
         shrink=0.75,
+        pad=0.08,
     )
 
     save_figure(
@@ -377,19 +382,21 @@ def plot_antarctica(polygons, lines):
         "01_antarctica_add_ibcso.png",
     )
 
-    plt.close(fig)
-
 
 # ============================================================
 # FIGURE 2: LHB IBCSO ONLY
 # ============================================================
 
-def plot_lhb_ibcso(bathy, raster_extent, plot_bounds):
+def plot_lhb_ibcso(
+    bathy,
+    raster_extent,
+    display_bounds,
+):
 
     print("\nCreating Figure 2: LHB IBCSO")
 
     fig, ax = plt.subplots(
-        figsize=(10, 9),
+        figsize=(10, 8),
         constrained_layout=True,
     )
 
@@ -399,18 +406,26 @@ def plot_lhb_ibcso(bathy, raster_extent, plot_bounds):
         raster_extent,
     )
 
-    ax.set_xlim(
-        plot_bounds[0],
-        plot_bounds[2],
-    )
-    ax.set_ylim(
-        plot_bounds[1],
-        plot_bounds[3],
+    west, south, east, north = display_bounds
+
+    ax.set_xlim(west, east)
+    ax.set_ylim(south, north)
+
+    ax.set_xlabel("Longitude (°E)")
+    ax.set_ylabel("Latitude (°S)")
+
+    ax.set_title(
+        "IBCSO bathymetry: Lützow-Holm Bay",
+        fontsize=14,
     )
 
-    ax.set_title("IBCSO bathymetry: Lützow-Holm Bay")
-
-    format_axis(ax)
+    ax.set_aspect("equal", adjustable="box")
+    ax.grid(
+        True,
+        linestyle=":",
+        linewidth=0.5,
+        alpha=0.5,
+    )
 
     fig.colorbar(
         image,
@@ -424,8 +439,6 @@ def plot_lhb_ibcso(bathy, raster_extent, plot_bounds):
         "02_lhb_ibcso.png",
     )
 
-    plt.close(fig)
-
 
 # ============================================================
 # FIGURE 3: LHB ADD + IBCSO
@@ -436,13 +449,13 @@ def plot_lhb_add_ibcso(
     lines,
     bathy,
     raster_extent,
-    plot_bounds,
+    display_bounds,
 ):
 
     print("\nCreating Figure 3: LHB ADD + IBCSO")
 
     fig, ax = plt.subplots(
-        figsize=(10, 9),
+        figsize=(10, 8),
         constrained_layout=True,
     )
 
@@ -458,18 +471,26 @@ def plot_lhb_add_ibcso(
         lines,
     )
 
-    ax.set_xlim(
-        plot_bounds[0],
-        plot_bounds[2],
-    )
-    ax.set_ylim(
-        plot_bounds[1],
-        plot_bounds[3],
+    west, south, east, north = display_bounds
+
+    ax.set_xlim(west, east)
+    ax.set_ylim(south, north)
+
+    ax.set_xlabel("Longitude (°E)")
+    ax.set_ylabel("Latitude (°S)")
+
+    ax.set_title(
+        "IBCSO + ADD: Lützow-Holm Bay",
+        fontsize=14,
     )
 
-    ax.set_title("IBCSO + ADD: Lützow-Holm Bay")
-
-    format_axis(ax)
+    ax.set_aspect("equal", adjustable="box")
+    ax.grid(
+        True,
+        linestyle=":",
+        linewidth=0.5,
+        alpha=0.5,
+    )
 
     fig.colorbar(
         image,
@@ -483,8 +504,6 @@ def plot_lhb_add_ibcso(
         "03_lhb_add_ibcso.png",
     )
 
-    plt.close(fig)
-
 
 # ============================================================
 # MAIN
@@ -497,39 +516,30 @@ if __name__ == "__main__":
     print("=" * 65)
 
     # --------------------------------------------------------
-    # Define LHB display bounds in EPSG:3031.
+    # LHB geographic display bounds.
     # --------------------------------------------------------
 
-    lhb_bounds = transform_bounds(
-        "EPSG:4326",
-        ADD_CRS,
-        *LONLAT_BOUNDS,
-        densify_pts=21,
+    west, south, east, north = LHB_BOUNDS
+    margin = LHB_DISPLAY_MARGIN_DEG
+
+    display_bounds = (
+        west - margin,
+        south - margin,
+        east + margin,
+        north + margin,
     )
 
-    xmin, ymin, xmax, ymax = lhb_bounds
+    print("\nLHB display bounds (EPSG:4326):")
+    print(display_bounds)
 
-    margin = 10_000.0
+    # --------------------------------------------------------
+    # Figure 1: Load all ADD data in EPSG:3031.
+    # --------------------------------------------------------
 
-    lhb_bounds = (
-        xmin - margin,
-        ymin - margin,
-        xmax + margin,
-        ymax + margin,
+    polygons_all, lines_all = load_add_data(
+        plot_bounds=None,
+        target_crs=ADD_CRS,
     )
-
-    print("\nLHB display bounds in EPSG:3031:")
-    print(lhb_bounds)
-
-    # --------------------------------------------------------
-    # Load all ADD data for Antarctica overview.
-    # --------------------------------------------------------
-
-    polygons_all, lines_all = load_add_data()
-
-    # --------------------------------------------------------
-    # Figure 1: Antarctica-wide ADD + IBCSO.
-    # --------------------------------------------------------
 
     plot_antarctica(
         polygons_all,
@@ -537,34 +547,48 @@ if __name__ == "__main__":
     )
 
     # --------------------------------------------------------
-    # Load ADD data within LHB display area.
+    # Convert LHB bounds to ADD CRS for spatial filtering.
+    # --------------------------------------------------------
+
+    lhb_bounds_add = transform_bounds(
+        GEOGRAPHIC_CRS,
+        ADD_CRS,
+        *display_bounds,
+        densify_pts=21,
+    )
+
+    # --------------------------------------------------------
+    # Load only ADD features in LHB.
+    # Reproject them to geographic coordinates.
     # --------------------------------------------------------
 
     polygons_lhb, lines_lhb = load_add_data(
-        plot_bounds=lhb_bounds,
+        plot_bounds=lhb_bounds_add,
+        target_crs=GEOGRAPHIC_CRS,
     )
 
     # --------------------------------------------------------
-    # Load LHB IBCSO once and reuse for Figures 2 and 3.
+    # Load LHB IBCSO in geographic coordinates.
     # --------------------------------------------------------
 
     bathy_lhb, raster_extent_lhb = load_ibcso(
-        lhb_bounds,
-        LHB_RESOLUTION,
+        display_bounds,
+        GEOGRAPHIC_CRS,
+        LHB_DISPLAY_RESOLUTION_DEG,
     )
 
     # --------------------------------------------------------
-    # Figure 2: LHB IBCSO only.
+    # Figure 2: IBCSO only.
     # --------------------------------------------------------
 
     plot_lhb_ibcso(
         bathy_lhb,
         raster_extent_lhb,
-        lhb_bounds,
+        display_bounds,
     )
 
     # --------------------------------------------------------
-    # Figure 3: LHB ADD + IBCSO.
+    # Figure 3: ADD + IBCSO.
     # --------------------------------------------------------
 
     plot_lhb_add_ibcso(
@@ -572,7 +596,7 @@ if __name__ == "__main__":
         lines_lhb,
         bathy_lhb,
         raster_extent_lhb,
-        lhb_bounds,
+        display_bounds,
     )
 
     print("\nAll three figures generated successfully.")
