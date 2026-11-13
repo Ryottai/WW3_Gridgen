@@ -1,14 +1,23 @@
 """
-02-2_visualize_source_lhb.py
+02-3_visualize_lhb_polar.py
 
-Visualize Lützow-Holm Bay:
+Visualize Lützow-Holm Bay in a South Polar Stereographic projection.
+
 1. IBCSO bathymetry only
 2. IBCSO bathymetry + ADD
 
-This is the LHB-only script. Its graticule implementation is
-currently retained from the original pyproj-based version;
-Cartopy conversion can be developed independently here.
-All data coordinates are EPSG:3031.
+Design:
+- The map projection is SouthPolarStereo (true-scale latitude 71S, WGS84),
+  i.e. identical to EPSG:3031 except that the central meridian is rotated to
+  the middle of the study area so the bay appears "north-up".
+  Set MAP_CENTRAL_LON = 0.0 to get exactly the standard EPSG:3031 orientation.
+- The display window is the lon/lat rectangle itself (a curved "wedge" in the
+  polar stereographic plane). It is used as the axes boundary, so nothing
+  outside the window is drawn.
+- IBCSO and ADD are reprojected into the map CRS, so every artist is plotted
+  in native map coordinates (no on-the-fly warping).
+- Graticules and their labels are drawn manually along the wedge edges, so
+  they do not depend on Cartopy's gridliner label placement.
 """
 
 from pathlib import Path
@@ -19,45 +28,77 @@ import numpy as np
 import geopandas as gpd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import matplotlib.path as mpath
 from matplotlib.colors import LinearSegmentedColormap
+
+import cartopy.crs as ccrs
 
 import rasterio
 from rasterio.enums import Resampling
 from rasterio.transform import from_origin
-from rasterio.warp import reproject, transform_bounds
+from rasterio.warp import reproject
 
 from pyproj import CRS, Transformer
+
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from config import (
     ADD_LINE_FILE, ADD_POLYGON_FILE, IBCSO_FILE, FIGURE_DIR,
-    GEOGRAPHIC_CRS, LHB_BOUNDS, LHB_DISPLAY_MARGIN_DEG,
+    LHB_BOUNDS, LHB_DISPLAY_MARGIN_DEG,
     SURFACE_COLORS, FIGURE_DPI,
     DEPTH_VMIN, DEPTH_VMAX, DEPTH_TICKS, DEPTH_COLORS,
     DEPTH_COLORBAR_LABEL, DEPTH_COLORBAR_EXTEND,
     DEPTH_COLORBAR_SHRINK, DEPTH_COLORBAR_PAD,
 )
 
-MAP_CRS = CRS.from_epsg(3031)
-GEO_CRS = CRS.from_epsg(4326)
-LHB_RESOLUTION_M = 1000
-LHB_LON_INTERVAL = 2
-LHB_LAT_INTERVAL = 1
+
+# ----------------------------------------------------------------------
+# Projection setup
+# ----------------------------------------------------------------------
+TRUE_SCALE_LAT = -71.0
+
+_west, _south, _east, _north = LHB_BOUNDS
+MAP_CENTRAL_LON = round(0.5 * (_west + _east), 2)   # 0.0 -> plain EPSG:3031
+
+PROJ = ccrs.SouthPolarStereo(
+    central_longitude=MAP_CENTRAL_LON,
+    true_scale_latitude=TRUE_SCALE_LAT,
+)
+MAP_CRS = CRS.from_proj4(PROJ.proj4_init)
+
+# ADD files are assumed to be stored in EPSG:3031 (used for the bbox filter).
+CRS_3031 = CRS.from_epsg(3031)
+CRS_GEO = CRS.from_epsg(4326)
+
+# ----------------------------------------------------------------------
+# Display settings
+# ----------------------------------------------------------------------
+RESOLUTION_M = 1000
+LON_INTERVAL = 2
+LAT_INTERVAL = 1
+
 GRID_COLOR = "0.35"
 GRID_ALPHA = 0.65
 GRID_LINEWIDTH = 0.55
 GRID_LINESTYLE = ":"
+GRID_LABEL_SIZE = 8
+GRID_LABEL_COLOR = "0.2"
+LABEL_OFFSET_PT = 4
+
+FIGURE_SIZE = (11, 7)
+OUTPUT_DPI = min(FIGURE_DPI, 150)
+
 DEPTH_CMAP = LinearSegmentedColormap.from_list(
     "shallow_brown_deep_blue", DEPTH_COLORS
 )
 DEPTH_CMAP.set_bad((1.0, 1.0, 1.0, 0.0))
-OUTPUT_DPI = min(FIGURE_DPI, 150)
-
-TO_MAP = Transformer.from_crs(GEO_CRS, MAP_CRS, always_xy=True)
 
 
+# ----------------------------------------------------------------------
+# Utilities
+# ----------------------------------------------------------------------
 def ensure_output_directory():
     FIGURE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -66,28 +107,98 @@ def save_figure(fig, filename):
     ensure_output_directory()
     output_file = FIGURE_DIR / filename
     fig.savefig(
-        output_file, dpi=OUTPUT_DPI, bbox_inches="tight",
+        output_file,
+        dpi=OUTPUT_DPI,
+        bbox_inches="tight",
         facecolor="white",
     )
     print(f"Figure saved: {output_file}")
     plt.close(fig)
 
 
-def reproject_ibcso(bounds, resolution, label):
-    xmin, ymin, xmax, ymax = bounds
+def geographic_window():
+    """Return (west, east, south, north) including the display margin."""
+    west, south, east, north = LHB_BOUNDS
+    m = LHB_DISPLAY_MARGIN_DEG
+    window = (west - m, east + m, south - m, north + m)
+    print("\nGeographic window (west, east, south, north):", window)
+    return window
+
+
+def window_outline_lonlat(window, n=200):
+    """Closed outline of the lon/lat rectangle, densified along each edge."""
+    west, east, south, north = window
+    lons = np.concatenate((
+        np.linspace(west, east, n),      # bottom (south edge)
+        np.full(n, east),                # right
+        np.linspace(east, west, n),      # top (north edge)
+        np.full(n, west),                # left
+        [west],                          # close
+    ))
+    lats = np.concatenate((
+        np.full(n, south),
+        np.linspace(south, north, n),
+        np.full(n, north),
+        np.linspace(north, south, n),
+        [south],
+    ))
+    return lons, lats
+
+
+def get_window_geometry(window):
+    """
+    Project the window outline.
+
+    Returns
+    -------
+    outline_xy : (xs, ys) in the map CRS
+    bounds_map : (xmin, ymin, xmax, ymax) in the map CRS
+    bounds_3031 : (xmin, ymin, xmax, ymax) in EPSG:3031 (for ADD bbox filter)
+    """
+    lons, lats = window_outline_lonlat(window)
+
+    to_map = Transformer.from_crs(CRS_GEO, MAP_CRS, always_xy=True)
+    xs, ys = to_map.transform(lons, lats)
+
+    to_3031 = Transformer.from_crs(CRS_GEO, CRS_3031, always_xy=True)
+    xs31, ys31 = to_3031.transform(lons, lats)
+
+    if not (np.all(np.isfinite(xs)) and np.all(np.isfinite(ys))):
+        raise ValueError("Window outline produced non-finite coordinates.")
+
+    bounds_map = (xs.min(), ys.min(), xs.max(), ys.max())
+    pad = 10_000.0  # 10 km margin for the ADD bbox filter
+    bounds_3031 = (
+        xs31.min() - pad, ys31.min() - pad,
+        xs31.max() + pad, ys31.max() + pad,
+    )
+
+    print("Central longitude:", MAP_CENTRAL_LON)
+    print("Map bounds (xmin, ymin, xmax, ymax):", bounds_map)
+    return (xs, ys), bounds_map, bounds_3031
+
+
+# ----------------------------------------------------------------------
+# Data
+# ----------------------------------------------------------------------
+def reproject_ibcso(bounds_map, resolution, label):
+    """Reproject IBCSO into the map CRS over the window's bounding box."""
+    xmin, ymin, xmax, ymax = bounds_map
+
     width = math.ceil((xmax - xmin) / resolution)
     height = math.ceil((ymax - ymin) / resolution)
+    if width <= 0 or height <= 0:
+        raise ValueError(f"Invalid destination raster size: {width} x {height}")
+
     dst_transform = from_origin(xmin, ymax, resolution, resolution)
 
     print("\nReprojecting IBCSO:", label)
-    print("Source:", IBCSO_FILE)
-    print("Destination CRS:", MAP_CRS.to_string())
-    print("Resolution:", resolution, "m")
-    print("Raster size:", width, "x", height)
+    print("Raster size:", width, "x", height, f"({resolution} m)")
 
     with rasterio.open(IBCSO_FILE) as src:
         if src.crs is None:
             raise ValueError("IBCSO source CRS is missing.")
+
         elevation = np.full((height, width), np.nan, dtype=np.float32)
         reproject(
             source=rasterio.band(src, 1),
@@ -103,79 +214,187 @@ def reproject_ibcso(bounds, resolution, label):
         )
 
     valid_ocean = np.isfinite(elevation) & (elevation < 0)
+    if not np.any(valid_ocean):
+        raise ValueError(
+            f"No valid ocean pixels after reprojection: {label}. "
+            "Check LHB_BOUNDS and the source raster coverage."
+        )
+
     depth = np.full_like(elevation, np.nan, dtype=np.float32)
     depth[valid_ocean] = -elevation[valid_ocean]
-    if not np.any(valid_ocean):
-        raise ValueError(f"No valid ocean pixels after reprojection: {label}")
 
-    raster_extent = (
-        xmin, xmin + width * resolution,
-        ymax - height * resolution, ymax,
+    extent = (
+        xmin,
+        xmin + width * resolution,
+        ymax - height * resolution,
+        ymax,
     )
     print("Valid ocean pixels:", int(valid_ocean.sum()))
-    print("Minimum depth:", float(np.nanmin(depth)))
-    print("Maximum depth:", float(np.nanmax(depth)))
-    print("Extent:", raster_extent)
-    return np.ma.masked_invalid(depth), raster_extent
+    print("Depth range:", float(np.nanmin(depth)), "-", float(np.nanmax(depth)))
+    return np.ma.masked_invalid(depth), extent
 
 
-def load_add_data(bounds=None):
-    print("\nLoading ADD polygon data...")
-    polygon_kwargs = {
-        "layer": "add_coastline_high_res_polygon_v7_12",
-    }
-    if bounds is not None:
-        polygon_kwargs["bbox"] = bounds
-    polygons = gpd.read_file(ADD_POLYGON_FILE, **polygon_kwargs)
-    if polygons.crs is None:
-        raise ValueError("ADD polygon CRS is missing.")
-    if CRS.from_user_input(polygons.crs) != MAP_CRS:
-        polygons = polygons.to_crs(MAP_CRS)
-    print("Polygon features:", len(polygons))
+def _read_add_layer(path, layer, bbox_3031):
+    gdf = gpd.read_file(path, layer=layer, bbox=bbox_3031)
+    if gdf.crs is None:
+        raise ValueError(f"{layer}: CRS is missing.")
+    if CRS.from_user_input(gdf.crs) != MAP_CRS:
+        gdf = gdf.to_crs(MAP_CRS)
+    print(f"{layer}: {len(gdf)} features")
+    return gdf
+
+
+def load_add_data(bbox_3031):
+    print("\nLoading ADD data...")
+    polygons = _read_add_layer(
+        ADD_POLYGON_FILE, "add_coastline_high_res_polygon_v7_12", bbox_3031
+    )
+    lines = _read_add_layer(
+        ADD_LINE_FILE, "add_coastline_high_res_line_v7_12", bbox_3031
+    )
     if "surface" in polygons.columns:
-        print("Surface categories:")
         print(polygons["surface"].value_counts(dropna=False))
-
-    print("\nLoading ADD line data...")
-    line_kwargs = {
-        "layer": "add_coastline_high_res_line_v7_12",
-    }
-    if bounds is not None:
-        line_kwargs["bbox"] = bounds
-    lines = gpd.read_file(ADD_LINE_FILE, **line_kwargs)
-    if lines.crs is None:
-        raise ValueError("ADD line CRS is missing.")
-    if CRS.from_user_input(lines.crs) != MAP_CRS:
-        lines = lines.to_crs(MAP_CRS)
-    print("Line features:", len(lines))
     return polygons, lines
 
 
+# ----------------------------------------------------------------------
+# Axes configuration
+# ----------------------------------------------------------------------
+def create_axes():
+    fig = plt.figure(figsize=FIGURE_SIZE)
+    ax = fig.add_subplot(1, 1, 1, projection=PROJ)
+    return fig, ax
+
+
+def configure_axes(ax, outline_xy, bounds_map):
+    """
+    Fix the view to the bounding box, then clip the axes to the exact
+    lon/lat wedge. Must be called BEFORE drawing any artist so that the
+    clip path is picked up by everything added afterwards.
+    """
+    xmin, ymin, xmax, ymax = bounds_map
+    # Small pad so the wedge lies strictly inside the view limits.
+    pad_x = 0.01 * (xmax - xmin)
+    pad_y = 0.01 * (ymax - ymin)
+    ax.set_extent(
+        (xmin - pad_x, xmax + pad_x, ymin - pad_y, ymax + pad_y),
+        crs=PROJ,
+    )
+
+    # Cartopy clips the boundary path to ax.viewLim (data coordinates),
+    # so the path must be given in map coordinates with transData.
+    xs, ys = outline_xy
+    ax.set_boundary(
+        mpath.Path(np.column_stack((xs, ys))),
+        transform=ax.transData,
+    )
+    ax.set_facecolor("white")
+
+
+def _fmt_lon(lon):
+    lon = ((lon + 180) % 360) - 180
+    if np.isclose(lon, 0) or np.isclose(abs(lon), 180):
+        return f"{abs(lon):g}°"
+    return f"{abs(lon):g}°{'E' if lon > 0 else 'W'}"
+
+
+def _fmt_lat(lat):
+    if np.isclose(lat, 0):
+        return "0°"
+    return f"{abs(lat):g}°{'N' if lat > 0 else 'S'}"
+
+
+def _ticks(start, stop, step):
+    first = math.ceil(start / step - 1e-9) * step
+    ticks = np.arange(first, stop + step * 0.5, step)
+    return ticks[(ticks >= start - 1e-9) & (ticks <= stop + 1e-9)]
+
+
+def add_graticules(ax, window):
+    """
+    Draw meridians/parallels and place labels where they meet the wedge:
+    longitudes on the bottom/top arcs, latitudes on the left/right edges.
+    """
+    west, east, south, north = window
+    to_map = Transformer.from_crs(CRS_GEO, MAP_CRS, always_xy=True)
+
+    line_kw = dict(
+        color=GRID_COLOR, alpha=GRID_ALPHA, linewidth=GRID_LINEWIDTH,
+        linestyle=GRID_LINESTYLE, zorder=5,
+    )
+    label_kw = dict(
+        fontsize=GRID_LABEL_SIZE, color=GRID_LABEL_COLOR,
+        textcoords="offset points", annotation_clip=False,
+    )
+    off = LABEL_OFFSET_PT
+
+    lon_ticks = _ticks(west, east, LON_INTERVAL)
+    lat_ticks = _ticks(south, north, LAT_INTERVAL)
+
+    lat_line = np.linspace(south, north, 200)
+    for lon in lon_ticks:
+        x, y = to_map.transform(np.full_like(lat_line, lon), lat_line)
+        ax.plot(x, y, transform=PROJ, **line_kw)
+
+        xb, yb = to_map.transform(lon, south)
+        xt, yt = to_map.transform(lon, north)
+        ax.annotate(_fmt_lon(lon), xy=(xb, yb), xytext=(0, -off),
+                    ha="center", va="top", **label_kw)
+        ax.annotate(_fmt_lon(lon), xy=(xt, yt), xytext=(0, off),
+                    ha="center", va="bottom", **label_kw)
+
+    lon_line = np.linspace(west, east, 200)
+    for lat in lat_ticks:
+        x, y = to_map.transform(lon_line, np.full_like(lon_line, lat))
+        ax.plot(x, y, transform=PROJ, **line_kw)
+
+        xl, yl = to_map.transform(west, lat)
+        xr, yr = to_map.transform(east, lat)
+        ax.annotate(_fmt_lat(lat), xy=(xl, yl), xytext=(-off, 0),
+                    ha="right", va="center", **label_kw)
+        ax.annotate(_fmt_lat(lat), xy=(xr, yr), xytext=(off, 0),
+                    ha="left", va="center", **label_kw)
+
+
+# ----------------------------------------------------------------------
+# Drawing
+# ----------------------------------------------------------------------
 def draw_bathymetry(ax, bathy, extent):
-    xmin, xmax, ymin, ymax = extent
     return ax.imshow(
-        bathy, extent=(xmin, xmax, ymin, ymax),
-        origin="upper", cmap=DEPTH_CMAP,
-        vmin=DEPTH_VMIN, vmax=DEPTH_VMAX,
-        interpolation="nearest", zorder=1,
+        bathy,
+        extent=extent,
+        origin="upper",
+        cmap=DEPTH_CMAP,
+        vmin=DEPTH_VMIN,
+        vmax=DEPTH_VMAX,
+        interpolation="nearest",
+        transform=PROJ,
+        zorder=1,
     )
 
 
-def draw_add(ax, polygons, lines, linewidth=0.3):
-    if not polygons.empty:
+def draw_add(ax, polygons, lines, linewidth=0.35):
+    if not polygons.empty and "surface" in polygons.columns:
         for surface, color in SURFACE_COLORS.items():
             subset = polygons[polygons["surface"] == surface]
-            if subset.empty:
-                continue
-            subset.plot(
-                ax=ax, color=color, edgecolor="none",
-                linewidth=0, alpha=1.0, zorder=3,
-            )
+            geoms = [g for g in subset.geometry
+                     if g is not None and not g.is_empty]
+            if geoms:
+                ax.add_geometries(
+                    geoms, crs=PROJ,
+                    facecolor=color, edgecolor="none", linewidth=0,
+                    zorder=3,
+                )
+
     if not lines.empty:
-        lines.plot(
-            ax=ax, color="black", linewidth=linewidth,
-            alpha=0.9, zorder=4,
-        )
+        geoms = [g for g in lines.geometry
+                 if g is not None and not g.is_empty]
+        if geoms:
+            ax.add_geometries(
+                geoms, crs=PROJ,
+                facecolor="none", edgecolor="black",
+                linewidth=linewidth, alpha=0.9, zorder=4,
+            )
 
 
 def add_add_legend(ax):
@@ -183,188 +402,78 @@ def add_add_legend(ax):
         mpatches.Patch(color=color, label=surface)
         for surface, color in SURFACE_COLORS.items()
     ]
-    ax.legend(
-        handles=handles, loc="lower left",
-        fontsize=8, framealpha=0.9,
-    )
-
-
-def project_lonlat(lons, lats):
-    x, y = TO_MAP.transform(lons, lats)
-    return np.asarray(x), np.asarray(y)
-
-
-def draw_graticules(ax, bounds, lon_interval, lat_interval,
-                    geographic_bounds=None):
-    """Original pyproj-based LHB graticules (to be replaced by Cartopy)."""
-    if geographic_bounds is None:
-        raise ValueError("geographic_bounds is required for LHB graticules.")
-
-    west, south, east, north = geographic_bounds
-    longitude_values = np.arange(
-        math.ceil(west / lon_interval) * lon_interval,
-        east + lon_interval * 0.5,
-        lon_interval,
-    )
-    latitude_values = np.arange(
-        math.ceil(south / lat_interval) * lat_interval,
-        north + lat_interval * 0.5,
-        lat_interval,
-    )
-
-    latitude_samples = np.linspace(south, north, 500)
-    for lon in longitude_values:
-        lons = np.full_like(latitude_samples, lon)
-        x, y = project_lonlat(lons, latitude_samples)
-        valid = np.isfinite(x) & np.isfinite(y)
-        ax.plot(
-            x[valid], y[valid], color=GRID_COLOR,
-            linewidth=GRID_LINEWIDTH, linestyle=GRID_LINESTYLE,
-            alpha=GRID_ALPHA, zorder=5,
-        )
-        label_x, label_y = project_lonlat(
-            np.array([lon]), np.array([north])
-        )
-        ax.annotate(
-            f"{abs(lon):g}°{'W' if lon < 0 else 'E' if lon > 0 else ''}"
-            if lon != 0 else "0°",
-            (label_x[0], label_y[0]), xytext=(0, 7),
-            textcoords="offset points", ha="center",
-            va="bottom", fontsize=8, zorder=9,
-        )
-
-    longitude_samples = np.linspace(west, east, 721)
-    for lat in latitude_values:
-        lats = np.full_like(longitude_samples, lat)
-        x, y = project_lonlat(longitude_samples, lats)
-        valid = np.isfinite(x) & np.isfinite(y)
-        ax.plot(
-            x[valid], y[valid], color=GRID_COLOR,
-            linewidth=GRID_LINEWIDTH, linestyle=GRID_LINESTYLE,
-            alpha=GRID_ALPHA, zorder=5,
-        )
-        label_x, label_y = project_lonlat(
-            np.array([west]), np.array([lat])
-        )
-        ax.annotate(
-            f"{abs(lat):g}°S" if lat < 0 else f"{lat:g}°N",
-            (label_x[0], label_y[0]), xytext=(-7, 0),
-            textcoords="offset points", ha="right",
-            va="center", fontsize=8, zorder=9,
-        )
-
-
-def configure_map_axes(ax, bounds):
-    xmin, ymin, xmax, ymax = bounds
-    ax.set_xlim(xmin, xmax)
-    ax.set_ylim(ymin, ymax)
-    ax.set_aspect("equal", adjustable="box")
-    ax.set_facecolor("white")
-    ax.set_ylabel("")
-    ax.tick_params(
-        left=False, bottom=False,
-        labelleft=False, labelbottom=False,
-    )
-    for spine in ax.spines.values():
-        spine.set_visible(False)
+    ax.legend(handles=handles, loc="lower left", fontsize=8, framealpha=0.9)
 
 
 def add_colorbar(fig, ax, image):
-    colorbar = fig.colorbar(
-        image, ax=ax, orientation="vertical",
-        shrink=DEPTH_COLORBAR_SHRINK, pad=DEPTH_COLORBAR_PAD,
+    cbar = fig.colorbar(
+        image,
+        ax=ax,
+        orientation="vertical",
+        shrink=DEPTH_COLORBAR_SHRINK,
+        pad=DEPTH_COLORBAR_PAD,
         extend=DEPTH_COLORBAR_EXTEND,
-        ticks=np.arange(
-            DEPTH_VMIN, DEPTH_VMAX + DEPTH_TICKS, DEPTH_TICKS
-        ),
+        ticks=np.arange(DEPTH_VMIN, DEPTH_VMAX + DEPTH_TICKS, DEPTH_TICKS),
     )
-    colorbar.set_label(DEPTH_COLORBAR_LABEL, fontsize=9)
-    colorbar.ax.tick_params(labelsize=8)
-    colorbar.ax.invert_yaxis()
-    return colorbar
+    cbar.set_label(DEPTH_COLORBAR_LABEL, fontsize=9)
+    cbar.ax.tick_params(labelsize=8)
+    cbar.ax.invert_yaxis()
+    return cbar
 
 
-def get_lhb_projected_bounds():
-    west, south, east, north = LHB_BOUNDS
-    margin = LHB_DISPLAY_MARGIN_DEG
-    geographic_bounds = (
-        west - margin, south - margin,
-        east + margin, north + margin,
-    )
-    projected_bounds = transform_bounds(
-        GEO_CRS, MAP_CRS, *geographic_bounds, densify_pts=101,
-    )
-    print("\nLHB geographic bounds:")
-    print(geographic_bounds)
-    print("\nLHB projected bounds (EPSG:3031):")
-    print(projected_bounds)
-    return projected_bounds, geographic_bounds
+def set_title(ax, main):
+    sub = (f"South Polar Stereographic  "
+           f"(central meridian {MAP_CENTRAL_LON:g}°E, "
+           f"true scale {abs(TRUE_SCALE_LAT):g}°S)")
+    ax.set_title(f"{main}\n{sub}", fontsize=12, pad=24, linespacing=1.4)
 
 
-def plot_lhb_ibcso(bathy, raster_extent, display_bounds, geographic_bounds):
-    print("\nCreating Figure 2: LHB IBCSO")
-    fig, ax = plt.subplots(figsize=(11, 7))
-    image = draw_bathymetry(ax, bathy, raster_extent)
-    configure_map_axes(ax, display_bounds)
-    draw_graticules(
-        ax, display_bounds,
-        lon_interval=LHB_LON_INTERVAL,
-        lat_interval=LHB_LAT_INTERVAL,
-        geographic_bounds=geographic_bounds,
-    )
-    ax.set_title(
-        "IBCSO Bathymetry: Lützow-Holm Bay",
-        fontsize=13, pad=12,
-    )
+# ----------------------------------------------------------------------
+# Figures
+# ----------------------------------------------------------------------
+def plot_ibcso(bathy, extent, window, outline_xy, bounds_map):
+    print("\nCreating figure: IBCSO (polar stereographic)")
+    fig, ax = create_axes()
+    configure_axes(ax, outline_xy, bounds_map)
+    image = draw_bathymetry(ax, bathy, extent)
+    add_graticules(ax, window)
+    set_title(ax, "IBCSO Bathymetry: Lützow-Holm Bay")
     add_colorbar(fig, ax, image)
-    save_figure(fig, "02_lhb_ibcso.png")
+    save_figure(fig, "02_lhb_ibcso_polar.png")
 
 
-def plot_lhb_add_ibcso(
-    polygons, lines, bathy, raster_extent,
-    display_bounds, geographic_bounds,
-):
-    print("\nCreating Figure 3: LHB IBCSO + ADD")
-    fig, ax = plt.subplots(figsize=(11, 7))
-    image = draw_bathymetry(ax, bathy, raster_extent)
-    configure_map_axes(ax, display_bounds)
-    draw_graticules(
-        ax, display_bounds,
-        lon_interval=LHB_LON_INTERVAL,
-        lat_interval=LHB_LAT_INTERVAL,
-        geographic_bounds=geographic_bounds,
-    )
-    draw_add(ax, polygons, lines, linewidth=0.35)
-    ax.set_title(
-        "IBCSO Bathymetry and ADD: Lützow-Holm Bay",
-        fontsize=13, pad=12,
-    )
+def plot_add_ibcso(polygons, lines, bathy, extent,
+                   window, outline_xy, bounds_map):
+    print("\nCreating figure: IBCSO + ADD (polar stereographic)")
+    fig, ax = create_axes()
+    configure_axes(ax, outline_xy, bounds_map)
+    image = draw_bathymetry(ax, bathy, extent)
+    draw_add(ax, polygons, lines)
+    add_graticules(ax, window)
+    set_title(ax, "IBCSO Bathymetry and ADD: Lützow-Holm Bay")
     add_add_legend(ax)
     add_colorbar(fig, ax, image)
-    save_figure(fig, "03_lhb_add_ibcso.png")
+    save_figure(fig, "03_lhb_add_ibcso_polar.png")
 
 
 def main():
     print("=" * 65)
-    print("WW3 GRIDGEN: LHB SOURCE DATA VISUALIZATION")
+    print("WW3 GRIDGEN: LHB SOURCE DATA (POLAR STEREOGRAPHIC)")
     print("=" * 65)
     ensure_output_directory()
 
-    lhb_bounds, lhb_geo_bounds = get_lhb_projected_bounds()
-    polygons_lhb, lines_lhb = load_add_data(bounds=lhb_bounds)
-    bathy_lhb, raster_extent_lhb = reproject_ibcso(
-        lhb_bounds, LHB_RESOLUTION_M, "Lützow-Holm Bay",
-    )
-    plot_lhb_ibcso(
-        bathy_lhb, raster_extent_lhb,
-        lhb_bounds, lhb_geo_bounds,
-    )
-    plot_lhb_add_ibcso(
-        polygons_lhb, lines_lhb, bathy_lhb,
-        raster_extent_lhb, lhb_bounds, lhb_geo_bounds,
-    )
+    window = geographic_window()
+    outline_xy, bounds_map, bounds_3031 = get_window_geometry(window)
+
+    polygons, lines = load_add_data(bounds_3031)
+    bathy, extent = reproject_ibcso(bounds_map, RESOLUTION_M, "Lützow-Holm Bay")
+
+    plot_ibcso(bathy, extent, window, outline_xy, bounds_map)
+    plot_add_ibcso(polygons, lines, bathy, extent,
+                   window, outline_xy, bounds_map)
+
     print("\n" + "=" * 65)
-    print("Both LHB figures generated successfully.")
+    print("Both figures generated successfully.")
     print("=" * 65)
 
 
