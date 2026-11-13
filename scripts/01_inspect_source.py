@@ -10,20 +10,17 @@ Original files are read-only.
 """
 
 from pathlib import Path
+import sys
 
 import numpy as np
 import geopandas as gpd
 import rasterio
 
-
-# ============================================================
-# PATHS
-# ============================================================
-
+# Add project root to Python import path.
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
-ADD_DIR = ROOT / "input" / "raw" / "ADD"
-IBCSO_DIR = ROOT / "input" / "raw" / "IBCSO"
+from config import ADD_DIR, IBCSO_DIR
 
 
 # ============================================================
