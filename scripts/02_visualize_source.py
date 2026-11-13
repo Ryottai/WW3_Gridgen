@@ -418,7 +418,7 @@ def add_add_legend(ax):
     ax.legend(
         handles=handles,
         loc="lower left",
-        title="ADD surface",
+        # title="ADD surface",
         fontsize=8,
         framealpha=0.9,
     )
