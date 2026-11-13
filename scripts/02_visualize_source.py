@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.collections import Collection
 from matplotlib.lines import Line2D
+from matplotlib.colors import LinearSegmentedColormap
 
 import rasterio
 from rasterio.enums import Resampling
@@ -40,6 +41,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from config import (
+    # Existing settings
     ADD_LINE_FILE,
     ADD_POLYGON_FILE,
     IBCSO_FILE,
@@ -50,11 +52,18 @@ from config import (
     LHB_DISPLAY_MARGIN_DEG,
     ANTARCTICA_BOUNDS,
     ANTARCTICA_DISPLAY_RESOLUTION,
-    BATHY_VMIN,
-    BATHY_VMAX,
-    BATHY_CMAP,
     SURFACE_COLORS,
     FIGURE_DPI,
+
+    # Bathymetry color settings
+    DEPTH_VMIN,
+    DEPTH_VMAX,
+    DEPTH_TICKS,
+    DEPTH_COLORS,
+    DEPTH_COLORBAR_LABEL,
+    DEPTH_COLORBAR_EXTEND,
+    DEPTH_COLORBAR_SHRINK,
+    DEPTH_COLORBAR_PAD,
 )
 
 
@@ -77,6 +86,13 @@ GRID_COLOR = "0.35"
 GRID_ALPHA = 0.65
 GRID_LINEWIDTH = 0.55
 GRID_LINESTYLE = ":"
+
+# Bathymetry colormap.
+DEPTH_CMAP = LinearSegmentedColormap.from_list(
+    "shallow_brown_deep_blue",
+    DEPTH_COLORS,
+)
+DEPTH_CMAP.set_bad((1.0, 1.0, 1.0, 0.0))
 
 # Output.
 OUTPUT_DPI = min(FIGURE_DPI, 150)
@@ -150,26 +166,10 @@ def reproject_ibcso(
     label,
 ):
     """
-    Reproject IBCSO to EPSG:3031 using rasterio.warp.reproject.
+    Reproject IBCSO to EPSG:3031 and convert elevation
+    to positive water depth.
 
-    Parameters
-    ----------
-    bounds : tuple
-        (xmin, ymin, xmax, ymax) in EPSG:3031 meters.
-
-    resolution : float
-        Output pixel size in meters.
-
-    label : str
-        Name printed in the log.
-
-    Returns
-    -------
-    masked_array : numpy.ma.MaskedArray
-        Reprojected bathymetry.
-
-    extent : tuple
-        (xmin, xmax, ymin, ymax) in EPSG:3031.
+    Land (elevation >= 0) and NoData are masked.
     """
 
     xmin, ymin, xmax, ymax = bounds
@@ -195,10 +195,7 @@ def reproject_ibcso(
         if src.crs is None:
             raise ValueError("IBCSO source CRS is missing.")
 
-        print("Source CRS:", src.crs)
-        print("Source NoData:", src.nodata)
-
-        destination = np.full(
+        elevation = np.full(
             (height, width),
             np.nan,
             dtype=np.float32,
@@ -206,7 +203,7 @@ def reproject_ibcso(
 
         reproject(
             source=rasterio.band(src, 1),
-            destination=destination,
+            destination=elevation,
             src_transform=src.transform,
             src_crs=src.crs,
             src_nodata=src.nodata,
@@ -217,11 +214,27 @@ def reproject_ibcso(
             init_dest_nodata=True,
         )
 
-    valid = np.isfinite(destination)
+    # --------------------------------------------------------
+    # Convert elevation to positive water depth.
+    # Mask land and NoData.
+    # --------------------------------------------------------
 
-    if not np.any(valid):
+    valid_ocean = (
+        np.isfinite(elevation)
+        & (elevation < 0)
+    )
+
+    depth = np.full_like(
+        elevation,
+        np.nan,
+        dtype=np.float32,
+    )
+
+    depth[valid_ocean] = -elevation[valid_ocean]
+
+    if not np.any(valid_ocean):
         raise ValueError(
-            f"No valid IBCSO pixels after reprojection: {label}"
+            f"No valid ocean pixels after reprojection: {label}"
         )
 
     raster_extent = (
@@ -231,12 +244,12 @@ def reproject_ibcso(
         ymax,
     )
 
-    print("Valid pixels:", int(valid.sum()))
-    print("Minimum:", float(np.nanmin(destination)))
-    print("Maximum:", float(np.nanmax(destination)))
+    print("Valid ocean pixels:", int(valid_ocean.sum()))
+    print("Minimum depth:", float(np.nanmin(depth)))
+    print("Maximum depth:", float(np.nanmax(depth)))
     print("Extent:", raster_extent)
 
-    return np.ma.masked_invalid(destination), raster_extent
+    return np.ma.masked_invalid(depth), raster_extent
 
 
 # ============================================================
@@ -323,9 +336,9 @@ def draw_bathymetry(ax, bathy, extent):
         bathy,
         extent=(xmin, xmax, ymin, ymax),
         origin="upper",
-        cmap=BATHY_CMAP,
-        vmin=BATHY_VMIN,
-        vmax=BATHY_VMAX,
+        cmap=DEPTH_CMAP,
+        vmin=DEPTH_VMIN,
+        vmax=DEPTH_VMAX,
         interpolation="nearest",
         zorder=1,
     )
@@ -659,20 +672,30 @@ def configure_map_axes(
 
 
 def add_colorbar(fig, ax, image):
+
     colorbar = fig.colorbar(
         image,
         ax=ax,
         orientation="vertical",
-        shrink=0.78,
-        pad=0.025,
+        shrink=DEPTH_COLORBAR_SHRINK,
+        pad=DEPTH_COLORBAR_PAD,
+        extend=DEPTH_COLORBAR_EXTEND,
+        ticks=np.arange(
+            DEPTH_VMIN,
+            DEPTH_VMAX + DEPTH_TICKS,
+            DEPTH_TICKS,
+        ),
     )
 
     colorbar.set_label(
-        "Elevation / Bathymetry (m)",
+        DEPTH_COLORBAR_LABEL,
         fontsize=9,
     )
 
     colorbar.ax.tick_params(labelsize=8)
+    colorbar.ax.invert_yaxis()
+
+    return colorbar
 
 
 # ============================================================

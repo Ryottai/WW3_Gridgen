@@ -84,10 +84,31 @@ ANTARCTICA_BOUNDS = (
 ANTARCTICA_DISPLAY_RESOLUTION = 10_000.0  # meters
 LHB_DISPLAY_RESOLUTION_DEG = 0.01         # degrees
 
-# IBCSO color scale
-BATHY_VMIN = -5000
-BATHY_VMAX = 1500
-BATHY_CMAP = "terrain"
+# Water depth range [m]
+DEPTH_VMIN = 0
+DEPTH_VMAX = 5000
+
+# Colorbar ticks [m]
+DEPTH_TICKS = 1000
+
+# Bathymetry colormap
+DEPTH_COLORS = [
+    "#8c510a",  # 0 m: brown
+    "#bf812d",
+    "#dfc27d",
+    "#f6e8c3",
+    "#c7eae5",
+    "#80cdc1",
+    "#35978f",
+    "#2166ac",
+    "#053061",  # Deep ocean: dark blue
+]
+
+# Colorbar appearance
+DEPTH_COLORBAR_LABEL = "Water depth (m)"
+DEPTH_COLORBAR_EXTEND = "max"
+DEPTH_COLORBAR_SHRINK = 0.78
+DEPTH_COLORBAR_PAD = 0.025
 
 # ADD polygon colors
 SURFACE_COLORS = {
