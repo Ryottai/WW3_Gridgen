@@ -438,6 +438,7 @@ def project_lonlat(lons, lats):
     return np.asarray(x), np.asarray(y)
 
 
+
 def draw_graticules(
     ax,
     bounds,
@@ -453,9 +454,10 @@ def draw_graticules(
 
     Antarctica overview:
       - Meridians: every 30 degrees
-      - Parallels: 60S, 70S, 80S, 90S
-      - Latitude labels: 60S, 70S, 80S, 90S
-      - Longitude labels: every 30 degrees
+      - Parallels: 60S, 70S, 80S
+      - 90S: South Pole marker and label
+      - Longitude labels: radially outside the 60S circle
+      - Latitude labels: along 180W
 
     LHB:
       - Graticules are generated within geographic bounds.
@@ -476,26 +478,28 @@ def draw_graticules(
                 "circle_radius must be specified for circular maps."
             )
 
-        # Longitude interval: 30 degrees.
+        # ----------------------------------------------------
+        # Graticule values
+        # ----------------------------------------------------
+
         longitude_values = np.arange(
             -180,
             180,
             lon_interval,
         )
 
-        # Latitude interval: 10 degrees.
-        # Include 60S, 70S, 80S, and 90S.
-        latitude_values = np.arange(
-            -90,
-            -59,
-            lat_interval,
-        )
+        # 90S is a single point, not a circular parallel.
+        latitude_values = [-60, -70, -80]
 
-        # For this map, display only the requested latitude labels.
         if label_latitudes is None:
             label_latitudes = [-60, -70, -80, -90]
 
-        # Circle boundary.
+        label_latitudes = [int(lat) for lat in label_latitudes]
+
+        # ----------------------------------------------------
+        # Circular map boundary
+        # ----------------------------------------------------
+
         circle = mpatches.Circle(
             (0, 0),
             circle_radius,
@@ -542,22 +546,49 @@ def draw_graticules(
 
             line.set_clip_path(circle)
 
-            # Longitude labels at 60S, near the outer boundary.
+            # ------------------------------------------------
+            # Longitude labels
+            # Place labels radially outward from the pole.
+            # ------------------------------------------------
+
             label_x, label_y = project_lonlat(
                 np.array([lon]),
                 np.array([-60.0]),
             )
 
-            ax.annotate(
-                format_longitude(lon),
-                (label_x[0], label_y[0]),
-                xytext=(0, 5),
-                textcoords="offset points",
-                ha="center",
-                va="bottom",
-                fontsize=7,
-                zorder=9,
-            )
+            x0 = label_x[0]
+            y0 = label_y[0]
+
+            radius = math.hypot(x0, y0)
+
+            if radius > 0:
+                # Move outward by a fixed fraction of map radius.
+                offset_distance = circle_radius * 0.025
+
+                x_label = x0 + offset_distance * x0 / radius
+                y_label = y0 + offset_distance * y0 / radius
+
+                # Text alignment follows the radial direction.
+                horizontal_alignment = (
+                    "left" if x0 > 0.1 * circle_radius
+                    else "right" if x0 < -0.1 * circle_radius
+                    else "center"
+                )
+
+                vertical_alignment = (
+                    "bottom" if y0 > 0.1 * circle_radius
+                    else "top" if y0 < -0.1 * circle_radius
+                    else "center"
+                )
+
+                ax.annotate(
+                    format_longitude(lon),
+                    (x_label, y_label),
+                    ha=horizontal_alignment,
+                    va=vertical_alignment,
+                    fontsize=7,
+                    zorder=9,
+                )
 
         # ----------------------------------------------------
         # Parallels
@@ -595,39 +626,53 @@ def draw_graticules(
 
             line.set_clip_path(circle)
 
-            # Latitude labels at the western side of each parallel.
-            if int(lat) in label_latitudes:
+            # ------------------------------------------------
+            # Latitude labels along 180W
+            # ------------------------------------------------
 
-                if int(lat) == -90:
-                    # All longitudes converge at the South Pole.
-                    label_x, label_y = project_lonlat(
-                        np.array([0.0]),
-                        np.array([-89.5]),
-                    )
+            if lat in label_latitudes:
 
-                    label_position = (
-                        label_x[0],
-                        label_y[0],
-                    )
-
-                else:
-                    idx = np.nanargmin(x)
-
-                    label_position = (
-                        x[idx],
-                        y[idx],
-                    )
+                label_x, label_y = project_lonlat(
+                    np.array([-180.0]),
+                    np.array([lat]),
+                )
 
                 ax.annotate(
-                    format_latitude(int(lat)),
-                    label_position,
-                    xytext=(-7, 0),
+                    format_latitude(lat),
+                    (label_x[0], label_y[0]),
+                    xytext=(0, 4),
                     textcoords="offset points",
-                    ha="right",
-                    va="center",
-                    fontsize=8,
+                    ha="center",
+                    va="bottom",
+                    fontsize=7,
                     zorder=9,
                 )
+
+        # ----------------------------------------------------
+        # South Pole: 90S
+        # ----------------------------------------------------
+
+        if -90 in label_latitudes:
+
+            ax.plot(
+                0,
+                0,
+                marker="o",
+                markersize=2.5,
+                color=GRID_COLOR,
+                zorder=9,
+            )
+
+            ax.annotate(
+                "90°S",
+                (0, 0),
+                xytext=(6, 5),
+                textcoords="offset points",
+                ha="left",
+                va="bottom",
+                fontsize=8,
+                zorder=9,
+            )
 
         ax.add_patch(circle)
 
