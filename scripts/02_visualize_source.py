@@ -445,20 +445,57 @@ def draw_graticules(
     lat_interval,
     circular=False,
     circle_radius=None,
+    label_latitudes=None,
+    geographic_bounds=None,
 ):
     """
-    Draw longitude and latitude lines in EPSG:3031 coordinates.
+    Draw longitude and latitude graticules in EPSG:3031.
 
-    The lines are generated in geographic coordinates and
-    transformed using pyproj. No Cartopy is used.
+    Antarctica overview:
+      - Meridians: every 30 degrees
+      - Parallels: 60S, 70S, 80S, 90S
+      - Latitude labels: 60S, 70S, 80S, 90S
+      - Longitude labels: every 30 degrees
+
+    LHB:
+      - Graticules are generated within geographic bounds.
+      - Longitude labels are placed on the northern boundary.
+      - Latitude labels are placed on the western boundary.
     """
 
     xmin, ymin, xmax, ymax = bounds
 
-    # Clip all graticules to the circular map boundary if requested.
-    circle = None
+    # ========================================================
+    # ANTARCTICA OVERVIEW
+    # ========================================================
 
     if circular:
+
+        if circle_radius is None:
+            raise ValueError(
+                "circle_radius must be specified for circular maps."
+            )
+
+        # Longitude interval: 30 degrees.
+        longitude_values = np.arange(
+            -180,
+            180,
+            lon_interval,
+        )
+
+        # Latitude interval: 10 degrees.
+        # Include 60S, 70S, 80S, and 90S.
+        latitude_values = np.arange(
+            -90,
+            -59,
+            lat_interval,
+        )
+
+        # For this map, display only the requested latitude labels.
+        if label_latitudes is None:
+            label_latitudes = [-60, -70, -80, -90]
+
+        # Circle boundary.
         circle = mpatches.Circle(
             (0, 0),
             circle_radius,
@@ -469,25 +506,172 @@ def draw_graticules(
             zorder=8,
         )
 
+        # ----------------------------------------------------
+        # Meridians
+        # ----------------------------------------------------
+
+        latitude_samples = np.linspace(
+            -89.999,
+            -60.0,
+            500,
+        )
+
+        for lon in longitude_values:
+
+            lons = np.full_like(
+                latitude_samples,
+                lon,
+            )
+
+            x, y = project_lonlat(
+                lons,
+                latitude_samples,
+            )
+
+            valid = np.isfinite(x) & np.isfinite(y)
+
+            line, = ax.plot(
+                x[valid],
+                y[valid],
+                color=GRID_COLOR,
+                linewidth=GRID_LINEWIDTH,
+                linestyle=GRID_LINESTYLE,
+                alpha=GRID_ALPHA,
+                zorder=5,
+            )
+
+            line.set_clip_path(circle)
+
+            # Longitude labels at 60S, near the outer boundary.
+            label_x, label_y = project_lonlat(
+                np.array([lon]),
+                np.array([-60.0]),
+            )
+
+            ax.annotate(
+                format_longitude(lon),
+                (label_x[0], label_y[0]),
+                xytext=(0, 5),
+                textcoords="offset points",
+                ha="center",
+                va="bottom",
+                fontsize=7,
+                zorder=9,
+            )
+
+        # ----------------------------------------------------
+        # Parallels
+        # ----------------------------------------------------
+
+        longitude_samples = np.linspace(
+            -180,
+            180,
+            721,
+        )
+
+        for lat in latitude_values:
+
+            lats = np.full_like(
+                longitude_samples,
+                lat,
+            )
+
+            x, y = project_lonlat(
+                longitude_samples,
+                lats,
+            )
+
+            valid = np.isfinite(x) & np.isfinite(y)
+
+            line, = ax.plot(
+                x[valid],
+                y[valid],
+                color=GRID_COLOR,
+                linewidth=GRID_LINEWIDTH,
+                linestyle=GRID_LINESTYLE,
+                alpha=GRID_ALPHA,
+                zorder=5,
+            )
+
+            line.set_clip_path(circle)
+
+            # Latitude labels at the western side of each parallel.
+            if int(lat) in label_latitudes:
+
+                if int(lat) == -90:
+                    # All longitudes converge at the South Pole.
+                    label_x, label_y = project_lonlat(
+                        np.array([0.0]),
+                        np.array([-89.5]),
+                    )
+
+                    label_position = (
+                        label_x[0],
+                        label_y[0],
+                    )
+
+                else:
+                    idx = np.nanargmin(x)
+
+                    label_position = (
+                        x[idx],
+                        y[idx],
+                    )
+
+                ax.annotate(
+                    format_latitude(int(lat)),
+                    label_position,
+                    xytext=(-7, 0),
+                    textcoords="offset points",
+                    ha="right",
+                    va="center",
+                    fontsize=8,
+                    zorder=9,
+                )
+
+        ax.add_patch(circle)
+
+        return
+
+    # ========================================================
+    # LHB MAP
+    # ========================================================
+
+    if geographic_bounds is None:
+        raise ValueError(
+            "geographic_bounds is required for LHB graticules."
+        )
+
+    west, south, east, north = geographic_bounds
+
+    longitude_values = np.arange(
+        math.ceil(west / lon_interval) * lon_interval,
+        east + lon_interval * 0.5,
+        lon_interval,
+    )
+
+    latitude_values = np.arange(
+        math.ceil(south / lat_interval) * lat_interval,
+        north + lat_interval * 0.5,
+        lat_interval,
+    )
+
     # --------------------------------------------------------
     # Meridians
     # --------------------------------------------------------
 
-    longitude_values = np.arange(
-        -180,
-        180,
-        lon_interval,
-    )
-
     latitude_samples = np.linspace(
-        -89.5,
-        -45,
+        south,
+        north,
         500,
     )
 
     for lon in longitude_values:
 
-        lons = np.full_like(latitude_samples, lon)
+        lons = np.full_like(
+            latitude_samples,
+            lon,
+        )
 
         x, y = project_lonlat(
             lons,
@@ -496,7 +680,7 @@ def draw_graticules(
 
         valid = np.isfinite(x) & np.isfinite(y)
 
-        line, = ax.plot(
+        ax.plot(
             x[valid],
             y[valid],
             color=GRID_COLOR,
@@ -506,73 +690,38 @@ def draw_graticules(
             zorder=5,
         )
 
-        if circular:
-            line.set_clip_path(circle)
+        label_x, label_y = project_lonlat(
+            np.array([lon]),
+            np.array([north]),
+        )
 
-        # Longitude labels for the overview are placed near
-        # the circular boundary.
-        if circular:
-
-            label_x, label_y = project_lonlat(
-                np.array([lon]),
-                np.array([-59.0]),
-            )
-
-            ax.annotate(
-                format_longitude(lon),
-                (label_x[0], label_y[0]),
-                xytext=(0, 0),
-                textcoords="offset points",
-                ha="center",
-                va="center",
-                fontsize=7,
-                zorder=9,
-            )
-
-        else:
-            inside = (
-                valid
-                & (x >= xmin)
-                & (x <= xmax)
-                & (y >= ymin)
-                & (y <= ymax)
-            )
-
-            if np.any(inside):
-
-                indices = np.where(inside)[0]
-                idx = indices[np.argmin(y[inside])]
-
-                ax.annotate(
-                    format_longitude(lon),
-                    (x[idx], ymin),
-                    xytext=(0, -5),
-                    textcoords="offset points",
-                    ha="center",
-                    va="top",
-                    fontsize=8,
-                    zorder=7,
-                )
+        ax.annotate(
+            format_longitude(lon),
+            (label_x[0], label_y[0]),
+            xytext=(0, 7),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+            zorder=9,
+        )
 
     # --------------------------------------------------------
     # Parallels
     # --------------------------------------------------------
 
-    latitude_values = np.arange(
-        -85,
-        -49,
-        lat_interval,
-    )
-
     longitude_samples = np.linspace(
-        -180,
-        180,
+        west,
+        east,
         721,
     )
 
     for lat in latitude_values:
 
-        lats = np.full_like(longitude_samples, lat)
+        lats = np.full_like(
+            longitude_samples,
+            lat,
+        )
 
         x, y = project_lonlat(
             longitude_samples,
@@ -581,7 +730,7 @@ def draw_graticules(
 
         valid = np.isfinite(x) & np.isfinite(y)
 
-        line, = ax.plot(
+        ax.plot(
             x[valid],
             y[valid],
             color=GRID_COLOR,
@@ -591,47 +740,21 @@ def draw_graticules(
             zorder=5,
         )
 
-        if circular:
-            line.set_clip_path(circle)
-
-        inside = (
-            valid
-            & (x >= xmin)
-            & (x <= xmax)
-            & (y >= ymin)
-            & (y <= ymax)
+        label_x, label_y = project_lonlat(
+            np.array([west]),
+            np.array([lat]),
         )
 
-        if np.any(inside):
-
-            indices = np.where(inside)[0]
-            idx = indices[np.argmin(x[inside])]
-
-            if circular:
-                ax.annotate(
-                    format_latitude(lat),
-                    (x[idx], y[idx]),
-                    xytext=(-4, 0),
-                    textcoords="offset points",
-                    ha="right",
-                    va="center",
-                    fontsize=7,
-                    zorder=9,
-                )
-            else:
-                ax.annotate(
-                    format_latitude(lat),
-                    (xmin, y[idx]),
-                    xytext=(-5, 0),
-                    textcoords="offset points",
-                    ha="right",
-                    va="center",
-                    fontsize=8,
-                    zorder=7,
-                )
-
-    if circular:
-        ax.add_patch(circle)
+        ax.annotate(
+            format_latitude(lat),
+            (label_x[0], label_y[0]),
+            xytext=(-7, 0),
+            textcoords="offset points",
+            ha="right",
+            va="center",
+            fontsize=8,
+            zorder=9,
+        )
 
 
 # ============================================================
@@ -666,9 +789,9 @@ def configure_map_axes(
     for spine in ax.spines.values():
         spine.set_visible(False)
 
-    if circular and circle_radius is not None:
-        ax.set_xlim(-circle_radius, circle_radius)
-        ax.set_ylim(-circle_radius, circle_radius)
+    # if circular and circle_radius is not None:
+    #     ax.set_xlim(-circle_radius, circle_radius)
+    #     ax.set_ylim(-circle_radius, circle_radius)
 
 
 def add_colorbar(fig, ax, image):
@@ -706,23 +829,39 @@ def plot_antarctica(polygons, lines):
 
     print("\nCreating Figure 1: Antarctica overview")
 
-    xmin, ymin, xmax, ymax = ANTARCTICA_BOUNDS
+    # --------------------------------------------------------
+    # Calculate the radius corresponding to 60°S.
+    # --------------------------------------------------------
 
-    radius = min(
-        abs(xmax - xmin),
-        abs(ymax - ymin),
-    ) / 2.0
+    x60, y60 = TO_MAP.transform(0.0, -60.0)
 
-    # Use a square raster covering the circular map.
-    overview_bounds = (
+    radius = math.hypot(x60, y60)
+
+    print("60°S map radius:", radius / 1000, "km")
+
+    raster_bounds = (
         -radius,
         -radius,
         radius,
         radius,
     )
 
+    # Add some space outside the circular map for labels.
+    padding = 1.08
+
+    axes_bounds = (
+        -radius * padding,
+        -radius * padding,
+        radius * padding,
+        radius * padding,
+    )
+
+    # --------------------------------------------------------
+    # Reproject IBCSO.
+    # --------------------------------------------------------
+
     bathy, raster_extent = reproject_ibcso(
-        overview_bounds,
+        raster_bounds,
         ANTARCTICA_DISPLAY_RESOLUTION,
         "Antarctica overview",
     )
@@ -733,10 +872,14 @@ def plot_antarctica(polygons, lines):
 
     configure_map_axes(
         ax,
-        overview_bounds,
+        axes_bounds,
         circular=True,
         circle_radius=radius,
     )
+
+    # --------------------------------------------------------
+    # Bathymetry.
+    # --------------------------------------------------------
 
     image = draw_bathymetry(
         ax,
@@ -744,7 +887,6 @@ def plot_antarctica(polygons, lines):
         raster_extent,
     )
 
-    # Clip bathymetry to the circular map.
     map_circle = mpatches.Circle(
         (0, 0),
         radius,
@@ -753,17 +895,24 @@ def plot_antarctica(polygons, lines):
 
     image.set_clip_path(map_circle)
 
-    # Draw geographic gridlines.
+    # --------------------------------------------------------
+    # Geographic graticules.
+    # --------------------------------------------------------
+
     draw_graticules(
         ax,
-        overview_bounds,
-        lon_interval=ANTARCTICA_LON_INTERVAL,
-        lat_interval=ANTARCTICA_LAT_INTERVAL,
+        axes_bounds,
+        lon_interval=30,
+        lat_interval=10,
         circular=True,
         circle_radius=radius,
+        label_latitudes=[-60, -70, -80],
     )
 
-    # Draw ADD.
+    # --------------------------------------------------------
+    # ADD.
+    # --------------------------------------------------------
+
     draw_add(
         ax,
         polygons,
@@ -816,7 +965,7 @@ def get_lhb_projected_bounds():
     print("\nLHB projected bounds (EPSG:3031):")
     print(projected_bounds)
 
-    return projected_bounds
+    return projected_bounds, geographic_bounds
 
 
 # ============================================================
@@ -827,6 +976,7 @@ def plot_lhb_ibcso(
     bathy,
     raster_extent,
     display_bounds,
+    geographic_bounds,
 ):
 
     print("\nCreating Figure 2: LHB IBCSO")
@@ -851,6 +1001,7 @@ def plot_lhb_ibcso(
         display_bounds,
         lon_interval=LHB_LON_INTERVAL,
         lat_interval=LHB_LAT_INTERVAL,
+        geographic_bounds=geographic_bounds,
     )
 
     ax.set_title(
@@ -877,6 +1028,7 @@ def plot_lhb_add_ibcso(
     bathy,
     raster_extent,
     display_bounds,
+    geographic_bounds,
 ):
 
     print("\nCreating Figure 3: LHB IBCSO + ADD")
@@ -901,6 +1053,7 @@ def plot_lhb_add_ibcso(
         display_bounds,
         lon_interval=LHB_LON_INTERVAL,
         lat_interval=LHB_LAT_INTERVAL,
+        geographic_bounds=geographic_bounds,
     )
 
     draw_add(
@@ -956,7 +1109,7 @@ def main():
     # 3. LHB projected bounds
     # --------------------------------------------------------
 
-    lhb_bounds = get_lhb_projected_bounds()
+    lhb_bounds, lhb_geo_bounds = get_lhb_projected_bounds()
 
     # --------------------------------------------------------
     # 4. LHB ADD only
@@ -984,6 +1137,7 @@ def main():
         bathy_lhb,
         raster_extent_lhb,
         lhb_bounds,
+        lhb_geo_bounds,
     )
 
     # --------------------------------------------------------
@@ -996,6 +1150,7 @@ def main():
         bathy_lhb,
         raster_extent_lhb,
         lhb_bounds,
+        lhb_geo_bounds,
     )
 
     print("\n" + "=" * 65)
