@@ -776,7 +776,7 @@ def configure_map_axes(
 
     ax.set_facecolor("white")
 
-    ax.set_xlabel("Longitude / Latitude")
+    # ax.set_xlabel("Longitude / Latitude")
     ax.set_ylabel("")
 
     ax.tick_params(
@@ -788,10 +788,6 @@ def configure_map_axes(
 
     for spine in ax.spines.values():
         spine.set_visible(False)
-
-    # if circular and circle_radius is not None:
-    #     ax.set_xlim(-circle_radius, circle_radius)
-    #     ax.set_ylim(-circle_radius, circle_radius)
 
 
 def add_colorbar(fig, ax, image):
