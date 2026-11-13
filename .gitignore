@@ -1,3 +1,7 @@
+# Python cache
+__pycache__/
+
+
 # Raw geospatial datasets
 input/raw/ADD/
 input/raw/IBCSO/
@@ -6,3 +10,4 @@ input/raw/IBCSO/
 output/figures/
 output/netcdf/
 output/ww3/
+
