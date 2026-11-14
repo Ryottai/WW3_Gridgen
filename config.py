@@ -119,3 +119,49 @@ SURFACE_COLORS = {
 }
 
 FIGURE_DPI = 200
+
+# ============================================================
+# WW3 STRUCTURED GRID (v6.07.1, RECT, spherical lon/lat)
+# ============================================================
+# Grid-point coordinates (not cell centres in the WW3 sense): each grid
+# point owns a cell that extends +-0.5 increments around it (gridgen
+# convention).  Domain limits come from LHB_BOUNDS.
+
+WW3_GRID_NAME = "LHB_RECT_0p10x0p05"            # file stem, no spaces
+WW3_GRID_TITLE = "Lutzow-Holm Bay 0.10x0.05"    # written to ww3_grid.inp (<= 30 chars)
+
+GRID_LON_MIN, GRID_LAT_MIN, GRID_LON_MAX, GRID_LAT_MAX = LHB_BOUNDS
+GRID_DLON = 0.10   # degrees  -> 121 points for 30-42E
+GRID_DLAT = 0.05   # degrees  ->  81 points for 70-66S
+
+# ADD surface classes treated as LAND (full blocking) in the WW3 grid.
+# Ice shelves, ice tongues and ice rumples are land by project decision.
+LAND_SURFACES = tuple(SURFACE_COLORS.keys())
+
+# --- Bathymetry / land-sea mask (gridgen "generate_grid" + "land mask") ---
+# Each cell is sampled on a GRID_SUBSAMPLE x GRID_SUBSAMPLE sub-grid
+# (0.01 x 0.005 deg ~ 0.4 x 0.55 km, comparable to IBCSO's 500 m).
+GRID_SUBSAMPLE = 10
+BATHY_WET_LIMIT = 0.25     # min fraction of IBCSO ocean (elev < 0) for a wet cell
+LAND_CUTOFF = 0.50         # cell -> land if ADD land fraction exceeds this
+IBCSO_RESAMPLING = "bilinear"   # IBCSO (EPSG:9354) -> lon/lat sub-grid
+
+# --- WW3 depth conventions ---
+WW3_ZLIM = -0.10           # limiting depth [m]: sea if depth < ZLIM (negative down)
+WW3_DMIN = 2.50            # minimum water depth [m] used by the model
+WW3_DRY_DEPTH = 999.0      # value written for land cells [m] (positive = above datum)
+WW3_DEPTH_SCALE = 0.001    # file holds integer millimetres
+
+# --- Sub-grid obstruction (gridgen create_obstr) ---
+OBSTR_OFFSET = 1           # 1: use both neighbours (OB-2, recommended), 0: own cell only
+OBSTR_SCALE = 100          # file holds integer percent
+WW3_FLAGTR = 4             # &MISC FLAGTR (2: cell centres, 4: + continuous ice)
+WW3_CICE0 = 0.25
+WW3_CICEN = 0.75
+
+# --- ww3_grid.inp ---
+WW3_MASK_VARIANT = "nobound"   # "nobound": 0/1 only, "bound": open edges = 2
+WW3_SPECTRUM = (1.1, 0.04118, 25, 24, 0.0)  # xfr, f1 [Hz], nk, nth, th0 offset
+WW3_FLAGS = "F T T T F T"      # FLDRY FLCX FLCY FLCTH FLCK FLSOU
+WW3_TIME_STEPS = None          # None -> estimated from CFL; or (dtmax, dtxy, dtkth, dtmin)
+WW3_UNIT_DEPTH, WW3_UNIT_OBSTR, WW3_UNIT_MASK = 40, 50, 60
