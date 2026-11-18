@@ -251,9 +251,16 @@ def calculate_bathymetry(subgrid):
     )
 
     with np.errstate(invalid="ignore"):
-        mean_depth = np.nanmean(
+        depth_sum = np.nansum(
             depth_samples,
             axis=(2, 3),
+        )
+
+        mean_depth = np.divide(
+            depth_sum,
+            wet_count,
+            out=np.full(wet_count.shape, np.nan, dtype=np.float64),
+            where=wet_count > 0,
         )
 
     # Retain bathymetry only where the wet fraction reaches
