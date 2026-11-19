@@ -5,6 +5,7 @@ __pycache__/
 # Raw geospatial datasets
 input/raw/ADD/
 input/raw/IBCSO/
+input/raw/ERA5/
 
 # Output datasets
 output/figures/
