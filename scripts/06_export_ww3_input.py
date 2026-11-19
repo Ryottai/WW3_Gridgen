@@ -298,12 +298,29 @@ def write_integer_grid(path, array):
     """Write a 2-D integer array as free-format ASCII."""
 
     with path.open("w", encoding="ascii", newline="\n") as f:
-        np.savetxt(
-            f,
-            array,
-            fmt="%d",
-            delimiter=" ",
+        np.savetxt(f, array, fmt="%d", delimiter=" ")
+
+
+def write_obstruction_grid(path, obstruction_x, obstruction_y):
+    """
+    Write the two directional obstruction arrays required by WW3.
+
+    WW3 reads OBSX and OBSY consecutively from the same obstruction file.
+    The available land fraction is scalar at each grid point, so this
+    initial export assumes isotropic obstruction and writes the same
+    transparency field for both directions.
+    """
+
+    if obstruction_x.ndim != 2 or obstruction_y.ndim != 2:
+        raise ValueError("Obstruction arrays must both be 2-D.")
+    if obstruction_x.shape != obstruction_y.shape:
+        raise ValueError(
+            "X- and Y-direction obstruction arrays must have the same shape."
         )
+
+    with path.open("w", encoding="ascii", newline="\n") as f:
+        np.savetxt(f, obstruction_x, fmt="%d", delimiter=" ")
+        np.savetxt(f, obstruction_y, fmt="%d", delimiter=" ")
 
 
 def write_ww3_grid_inp(
@@ -508,7 +525,15 @@ def main():
     grid_path = output_dir / "ww3_grid.inp"
 
     write_integer_grid(bottom_path, bottom)
-    write_integer_grid(obstruction_path, obstruction)
+
+    # WW3 reads two consecutive obstruction fields: OBSX followed by OBSY.
+    # The current land-fraction input is scalar, so use isotropic transparency.
+    write_obstruction_grid(
+        obstruction_path,
+        obstruction_x=obstruction,
+        obstruction_y=obstruction,
+    )
+
     write_integer_grid(mask_path, mask)
 
     write_ww3_grid_inp(
@@ -524,6 +549,18 @@ def main():
 
     # Summary.
     print("\n--- Grid ---")
+    # Validate the array dimensions expected by ww3_grid.
+    expected_points = lon.size * lat.size
+    if bottom.size != expected_points or mask.size != expected_points:
+        raise RuntimeError("Bottom/mask output dimensions do not match the grid.")
+    if obstruction.size != expected_points:
+        raise RuntimeError("Obstruction array dimensions do not match the grid.")
+
+    print("\\n--- Output data counts ---")
+    print(f"bottom.inp : {bottom.size:,} values (expected {expected_points:,})")
+    print(f"obstr.inp  : {2 * obstruction.size:,} values (2 x {expected_points:,})")
+    print(f"mask.inp   : {mask.size:,} values (expected {expected_points:,})")
+
     print(f"NX x NY       : {lon.size} x {lat.size}")
     print(f"Longitude     : {lon.min():.4f} to {lon.max():.4f}")
     print(f"Latitude      : {lat.min():.4f} to {lat.max():.4f}")
