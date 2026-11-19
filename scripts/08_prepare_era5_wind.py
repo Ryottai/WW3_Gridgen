@@ -1,22 +1,19 @@
-
 from pathlib import Path
 
 import xarray as xr
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
+
 INPUT_FILE = (
     PROJECT_DIR
-    / "input"
-    / "raw"
-    / "ERA5"
+    / "input/raw/ERA5"
     / "era5_lhb_wind_20230301_20230501.nc"
 )
+
 OUTPUT_FILE = (
     PROJECT_DIR
-    / "output"
-    / "ww3"
-    / "lhb_control" 
+    / "output/ww3/lhb_control"
     / "era5_lhb_wind_20230301_20230501_ww3.nc"
 )
 
@@ -30,39 +27,81 @@ def main():
             f"Output already exists: {OUTPUT_FILE}"
         )
 
-    with xr.open_dataset(INPUT_FILE) as source:
-        # WW3 expects the time dimension and coordinate to be named "time".
-        if "valid_time" not in source.dims:
-            raise ValueError("Expected dimension 'valid_time'.")
+    with xr.open_dataset(INPUT_FILE) as src:
 
-        ds = source.rename({"valid_time": "time"})
-
-        # These ERA5 auxiliary coordinates are not needed by WW3.
-        ds = ds.drop_vars(
-            ["number", "expver"],
-            errors="ignore",
+        # Construct a clean dataset from only required variables.
+        ds = xr.Dataset(
+            data_vars={
+                "u10": (
+                    ("time", "latitude", "longitude"),
+                    src["u10"].values,
+                    {
+                        "long_name": "10 metre U wind component",
+                        "units": "m s-1",
+                    },
+                ),
+                "v10": (
+                    ("time", "latitude", "longitude"),
+                    src["v10"].values,
+                    {
+                        "long_name": "10 metre V wind component",
+                        "units": "m s-1",
+                    },
+                ),
+            },
+            coords={
+                "time": src["valid_time"].values,
+                "latitude": src["latitude"].values,
+                "longitude": src["longitude"].values,
+            },
         )
 
-        # Explicitly define CF-compliant time encoding.
-        ds["time"].encoding["units"] = (
-            "hours since 2023-03-01 00:00:00"
-        )
-        ds["time"].encoding["calendar"] = "standard"
+    # Reverse latitude if it is descending.
+    if ds["latitude"].values[0] > ds["latitude"].values[-1]:
+        ds = ds.sortby("latitude")
 
-        # Keep only the two wind components and their coordinates.
-        ds = ds[["u10", "v10"]]
+    print(
+        "Latitude order:",
+        ds["latitude"].values[0],
+        "to",
+        ds["latitude"].values[-1],
+    )
 
-        OUTPUT_FILE.parent.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
+    # CF-compliant coordinate attributes.
+    ds["time"].attrs.update({
+        "standard_name": "time",
+        "long_name": "time",
+    })
+    ds["latitude"].attrs.update({
+        "standard_name": "latitude",
+        "long_name": "latitude",
+        "units": "degrees_north",
+    })
+    ds["longitude"].attrs.update({
+        "standard_name": "longitude",
+        "long_name": "longitude",
+        "units": "degrees_east",
+    })
 
-        ds.to_netcdf(
-            OUTPUT_FILE,
-            format="NETCDF4",
-        )
+    # Time encoding.
+    ds["time"].encoding.update({
+        "units": "hours since 2023-03-01 00:00:00",
+        "calendar": "standard",
+        "dtype": "int64",
+    })
+
+    OUTPUT_FILE.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    ds.to_netcdf(
+        OUTPUT_FILE,
+        format="NETCDF4",
+    )
 
     print(f"Created: {OUTPUT_FILE}")
+    print(ds)
 
 
 if __name__ == "__main__":
