@@ -405,6 +405,10 @@ def write_ww3_grid_inp(
             f"{mask_unit} 3 1 '(....)' "
             f"'NAME' '{mask_file}'"
         ),
+        "",
+        # Required terminator for the Output boundary points section.
+        # Five zeros indicate that no output boundary points are defined.
+        "0.0 0.0 0.0 0.0 0",
     ]
 
     path.write_text(
@@ -556,7 +560,7 @@ def main():
     if obstruction.size != expected_points:
         raise RuntimeError("Obstruction array dimensions do not match the grid.")
 
-    print("\\n--- Output data counts ---")
+    print("\n--- Output data counts ---")
     print(f"bottom.inp : {bottom.size:,} values (expected {expected_points:,})")
     print(f"obstr.inp  : {2 * obstruction.size:,} values (2 x {expected_points:,})")
     print(f"mask.inp   : {mask.size:,} values (expected {expected_points:,})")
